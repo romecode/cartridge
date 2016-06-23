@@ -1,0 +1,5 @@
+eclipse.preferences.version=1
+encoding//cartridge/shop/migrations/0001_initial.py=utf-8
+encoding//cartridge/shop/migrations/0002_auto_20141227_1331.py=utf-8
+encoding//cartridge/shop/migrations/0003_emailfield.py=utf-8
+encoding//cartridge/shop/migrations/0004_productimage_file_field.py=utf-8

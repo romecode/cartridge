@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?eclipse-pydev version="1.0"?><pydev_project>
+<pydev_property name="org.python.pydev.PYTHON_PROJECT_VERSION">python 2.7</pydev_property>
+<pydev_property name="org.python.pydev.PYTHON_PROJECT_INTERPRETER">AGF_dev</pydev_property>
+<pydev_pathproperty name="org.python.pydev.PROJECT_SOURCE_PATH">
+<path>/${PROJECT_DIR_NAME}/cartridge</path>
+</pydev_pathproperty>
+<pydev_pathproperty name="org.python.pydev.PROJECT_EXTERNAL_SOURCE_PATH">
+<path>/home/focus/Dropbox/AGF_dev/venv/lib/python2.7/site-packages</path>
+<path>/home/focus/Dropbox/AGF_dev/AGF</path>
+<path>/home/focus/git/mezzanine</path>
+<path>/home/focus/git/cartridge</path>
+</pydev_pathproperty>
+</pydev_project>

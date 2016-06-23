@@ -1,6 +1,3 @@
-from __future__ import unicode_literals
-from future.builtins import super, zip
-
 """
 Admin classes for all the shop models.
 
@@ -28,31 +25,34 @@ price fields on the product model are presented as editable fields in
 the product change list - if these form fields are used, the values
 are then pushed back onto the one variation for the product.
 """
+# Lists of field names.
+
+from __future__ import unicode_literals
 
 from copy import deepcopy
 
+from cartridge.shop.fields import MoneyField
+from cartridge.shop.forms import DiscountAdminForm, ImageWidget, MoneyWidget
+from cartridge.shop.forms import ProductAdminForm, ProductVariationAdminForm
+from cartridge.shop.forms import ProductVariationAdminFormset
+from cartridge.shop.models import Category, Product, ProductImage
+from cartridge.shop.models import OrderItem, Sale, DiscountCode
+from cartridge.shop.models import ProductVariation, ProductOption, Order
+from cartridge.shop.views import HAS_PDF
 from django.contrib import admin
 from django.contrib.admin.templatetags.admin_static import static
 from django.db.models import ImageField
+from django.forms import ImageField as IF
 from django.utils.translation import ugettext_lazy as _
-
+from future.builtins import super, zip
 from mezzanine.conf import settings
 from mezzanine.core.admin import (DisplayableAdmin,
                                   TabularDynamicInlineAdmin,
                                   BaseTranslationModelAdmin)
 from mezzanine.pages.admin import PageAdmin
 
-from cartridge.shop.fields import MoneyField
-from cartridge.shop.forms import ProductAdminForm, ProductVariationAdminForm
-from cartridge.shop.forms import ProductVariationAdminFormset
-from cartridge.shop.forms import DiscountAdminForm, ImageWidget, MoneyWidget
-from cartridge.shop.models import Category, Product, ProductImage
-from cartridge.shop.models import ProductVariation, ProductOption, Order
-from cartridge.shop.models import OrderItem, Sale, DiscountCode
-from cartridge.shop.views import HAS_PDF
 
 
-# Lists of field names.
 option_fields = [f.name for f in ProductVariation.option_fields()]
 _flds = lambda s: [f.name for f in Order._meta.fields if f.name.startswith(s)]
 billing_fields = _flds("billing_detail")
@@ -117,7 +117,8 @@ class ProductVariationAdmin(admin.TabularInline):
 
 class ProductImageAdmin(TabularDynamicInlineAdmin):
     model = ProductImage
-    formfield_overrides = {ImageField: {"widget": ImageWidget}}
+    exclude = ["image"]
+    #formfield_overrides = {ImageField: {"form_class": IF,"widget":ImageWidget}}
 
 ##############
 #  PRODUCTS  #
@@ -202,9 +203,10 @@ class ProductAdmin(DisplayableAdmin):
         occurred.
 
         """
-
+        
         # Store the images formset for later saving, otherwise save the
         # formset.
+        
         if formset.model == ProductImage:
             self._images_formset = formset
         else:

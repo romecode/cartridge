@@ -1,25 +1,25 @@
 from __future__ import division, unicode_literals
-from future.builtins import str, super
-from future.utils import with_metaclass
 
 from decimal import Decimal
 from functools import reduce
 from operator import iand, ior
 
+from cartridge.shop import fields, managers
+from cartridge.shop.utils import clear_session
 from django.core.exceptions import ValidationError
 from django.core.urlresolvers import reverse
 from django.db import models, connection
-from django.db.models.signals import m2m_changed
 from django.db.models import CharField, Q, F
 from django.db.models.base import ModelBase
+from django.db.models.signals import m2m_changed
 from django.dispatch import receiver
+from django.utils.encoding import force_text
+from django.utils.encoding import python_2_unicode_compatible
 from django.utils.timezone import now
 from django.utils.translation import (ugettext, ugettext_lazy as _,
                                       pgettext_lazy as __)
-
-from django.utils.encoding import force_text
-from django.utils.encoding import python_2_unicode_compatible
-
+from future.builtins import str, super
+from future.utils import with_metaclass
 from mezzanine.conf import settings
 from mezzanine.core.fields import FileField
 from mezzanine.core.managers import DisplayableManager
@@ -27,9 +27,7 @@ from mezzanine.core.models import Displayable, RichText, Orderable, SiteRelated
 from mezzanine.generic.fields import RatingField
 from mezzanine.pages.models import Page
 from mezzanine.utils.models import AdminThumbMixin, upload_to
-
-from cartridge.shop import fields, managers
-from cartridge.shop.utils import clear_session
+from versatileimagefield.fields import VersatileImageField, PPOIField
 
 
 class Priced(models.Model):
@@ -155,12 +153,15 @@ class ProductImage(Orderable):
     ``ProductImage`` models ensures there is a single set of images
     for the product.
     """
-
-    file = FileField(_("Image"), max_length=255, format="Image",
+    image = VersatileImageField(_("Image"), blank=True,ppoi_field="ppoi",max_length=255,
+        upload_to=upload_to("shop.ProductImage.file", "product"))
+    file = FileField(_("Image"), format="Image",
         upload_to=upload_to("shop.ProductImage.file", "product"))
     description = CharField(_("Description"), blank=True, max_length=100)
     product = models.ForeignKey("Product", related_name="images")
-
+    ppoi = PPOIField(
+        'Image PPOI'
+    )
     class Meta:
         verbose_name = _("Image")
         verbose_name_plural = _("Images")
@@ -173,6 +174,10 @@ class ProductImage(Orderable):
         if not value:
             value = ""
         return value
+    
+    def save(self,*args,**kwargs):
+        self.image=self.file.path
+        super(ProductImage, self).save(*args, **kwargs)
 
 
 @python_2_unicode_compatible

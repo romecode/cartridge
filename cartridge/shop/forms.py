@@ -25,7 +25,9 @@ from cartridge.shop.models import Product, ProductOption, ProductVariation
 from cartridge.shop.models import Cart, CartItem, Order, DiscountCode
 from cartridge.shop.utils import (make_choices, set_locale, set_shipping,
                                   clear_session)
-
+from filebrowser_safe.fields import FileBrowseWidget
+from filebrowser_safe.settings import EXTENSIONS
+import os
 
 ADD_PRODUCT_ERRORS = {
     "invalid_options": _("The selected options are currently unavailable."),
@@ -436,6 +438,7 @@ class ImageWidget(forms.FileInput):
     """
     def render(self, name, value, attrs):
         rendered = super(ImageWidget, self).render(name, value, attrs)
+        
         if value:
             orig = u"%s%s" % (settings.MEDIA_URL, value)
             thumb = u"%s%s" % (settings.MEDIA_URL, thumbnail(value, 48, 48))
@@ -542,3 +545,6 @@ class DiscountAdminForm(forms.ModelForm):
             error = _("Please enter a value for only one type of reduction.")
             self._errors[fields[0]] = self.error_class([error])
         return super(DiscountAdminForm, self).clean()
+
+
+            

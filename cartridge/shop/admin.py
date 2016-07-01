@@ -50,6 +50,7 @@ from mezzanine.core.admin import (DisplayableAdmin,
                                   TabularDynamicInlineAdmin,
                                   BaseTranslationModelAdmin)
 from mezzanine.pages.admin import PageAdmin
+from django.db.models.fields.files import FileField
 
 
 
@@ -118,7 +119,8 @@ class ProductVariationAdmin(admin.TabularInline):
 class ProductImageAdmin(TabularDynamicInlineAdmin):
     model = ProductImage
     exclude = ["image"]
-    #formfield_overrides = {ImageField: {"form_class": IF,"widget":ImageWidget}}
+    formfield_overrides = {ImageField: {"widget":ImageWidget}}
+    
 
 ##############
 #  PRODUCTS  #

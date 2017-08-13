@@ -76,7 +76,7 @@ def default_order_handler(request, order_form, order):
     pass
 
 
-def initial_order_data(request, form_class=None):
+def initial_order_data(request, form_class=None, express=False):
     """
     Return the initial data for the order form, trying the following in
     order:
@@ -88,6 +88,7 @@ def initial_order_data(request, form_class=None):
     - last order made by the user, via user ID or cookie
     - matching fields on an authenticated user and profile object
     """
+    _express = "express_" if express else ''
     initial = {}
     if request.method == "POST":
         initial = dict(list(request.POST.items()))
@@ -103,9 +104,9 @@ def initial_order_data(request, form_class=None):
         initial.setdefault("remember", "")
     # Look for order in current session.
     if not initial:
-        initial = request.session.get("order", {})
+        initial = request.session.get("%sorder" % _express, {})
     # Look for order in previous session.
-    if not initial:
+    if not initial and not express:
         lookup = {}
         if request.user.is_authenticated():
             lookup["user_id"] = request.user.id
@@ -199,3 +200,10 @@ if settings.SHOP_CHECKOUT_STEPS_CONFIRMATION:
     CHECKOUT_STEPS.append({"template": "confirmation", "url": "confirmation",
                            "title": _("Confirmation")})
     CHECKOUT_STEP_LAST += 1
+    
+EXPRESS_CHECKOUT_STEPS = ['PayPal',{"template": "billing_shipping",
+                                     "url": "details","title": _("Address")}]
+EXPRESS_CHECKOUT_STEP_FIRST = 1
+EXPRESS_CHECKOUT_STEPS.append({"template": "confirmation",
+                            "url": "confirmation","title": _("Confirmation")})
+EXPRESS_CHECKOUT_STEP_LAST = 3

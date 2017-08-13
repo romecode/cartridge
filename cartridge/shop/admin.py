@@ -128,7 +128,7 @@ class ProductImageAdmin(TabularDynamicInlineAdmin):
 
 product_fieldsets = deepcopy(DisplayableAdmin.fieldsets)
 product_fieldsets[0][1]["fields"].insert(2, "available")
-product_fieldsets[0][1]["fields"].extend(["content", "categories"])
+product_fieldsets[0][1]["fields"].extend(["content","list", "categories"])
 product_fieldsets = list(product_fieldsets)
 
 other_product_fields = []
@@ -178,34 +178,37 @@ class ProductAdmin(DisplayableAdmin):
         """
         Store the product object for creating variations in save_formset.
         """
+        print 'save_model'
         super(ProductAdmin, self).save_model(request, obj, form, change)
-        self._product = obj
-
+        
+        self._product_id = obj.id
+        
+ 
     def save_formset(self, request, form, formset, change):
         """
-
+  
         Here be dragons. We want to perform these steps sequentially:
-
+  
         - Save variations formset
         - Run the required variation manager methods:
           (create_from_options, manage_empty, etc)
         - Save the images formset
-
+  
         The variations formset needs to be saved first for the manager
         methods to have access to the correct variations. The images
         formset needs to be run last, because if images are deleted
         that are selected for variations, the variations formset will
         raise errors when saving due to invalid image selections. This
         gets addressed in the set_default_images method.
-
+  
         An additional problem is the actual ordering of the inlines,
         which are in the reverse order for achieving the above. To
         address this, we store the images formset as an attribute, and
         then call save on it after the other required steps have
         occurred.
-
+  
         """
-        
+        product=Product.objects.get(id=self._product_id)
         # Store the images formset for later saving, otherwise save the
         # formset.
         
@@ -214,11 +217,11 @@ class ProductAdmin(DisplayableAdmin):
         else:
             super(ProductAdmin, self).save_formset(request, form, formset,
                                                    change)
-
+  
         # Run each of the variation manager methods if we're saving
         # the variations formset.
         if formset.model == ProductVariation:
-
+            print 'here'
             # Build up selected options for new variations.
             options = dict([(f, request.POST.getlist(f)) for f in option_fields
                              if request.POST.getlist(f)])
@@ -226,28 +229,28 @@ class ProductAdmin(DisplayableAdmin):
             deleted_images = [request.POST.get(f.replace("-DELETE", "-id"))
                 for f in request.POST
                 if f.startswith("images-") and f.endswith("-DELETE")]
-
+  
             # Create new variations for selected options.
-            self._product.variations.create_from_options(options)
+            product.variations.create_from_options(options)
             # Create a default variation if there are none.
-            self._product.variations.manage_empty()
-
+            product.variations.manage_empty()
+  
             # Remove any images deleted just now from variations they're
             # assigned to, and set an image for any variations without one.
-            self._product.variations.set_default_images(deleted_images)
-
+            product.variations.set_default_images(deleted_images)
+  
             # Save the images formset stored previously.
             super(ProductAdmin, self).save_formset(request, form,
                                                  self._images_formset, change)
-
+  
             # Run again to allow for no images existing previously, with
             # new images added which can be used as defaults for variations.
-            self._product.variations.set_default_images(deleted_images)
-
+            product.variations.set_default_images(deleted_images)
+  
             # Copy duplicate fields (``Priced`` fields) from the default
             # variation to the product.
-            self._product.copy_default_variation()
-
+            product.copy_default_variation()
+  
             # Save every translated fields from ``ProductOption`` into
             # the required ``ProductVariation``
             if settings.USE_MODELTRANSLATION:
@@ -259,7 +262,7 @@ class ProductAdmin(DisplayableAdmin):
                         opt_obj = ProductOption.objects.get(type=opt_name[6:],
                                                             name=opt_value)
                         params = {opt_name: opt_value}
-                        for var in self._product.variations.filter(**params):
+                        for var in product.variations.filter(**params):
                             for code in OrderedDict(settings.LANGUAGES):
                                 setattr(var, _loc(opt_name, code),
                                         getattr(opt_obj, _loc('name', code)))

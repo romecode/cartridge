@@ -4,16 +4,19 @@ from django.conf.urls import url
 from mezzanine.conf import settings
 
 from cartridge.shop import views
-
+from cartridge.shop.forms import ExpressOrderForm
 
 _slash = "/" if settings.APPEND_SLASH else ""
 
 urlpatterns = [
+    
     url("^product/(?P<slug>.*)%s$" % _slash, views.product,
         name="shop_product"),
     url("^wishlist%s$" % _slash, views.wishlist, name="shop_wishlist"),
     url("^cart%s$" % _slash, views.cart, name="shop_cart"),
     url("^checkout%s$" % _slash, views.checkout_steps, name="shop_checkout"),
+    url("^express-checkout%s$" % _slash, views.express_steps,{'form_class':ExpressOrderForm}, name="shop_express_checkout"),
+    url("^express-checkout-cancel%s$" % _slash, views.express_cancel, name="shop_express_checkout_cancel"),
     url("^checkout/complete%s$" % _slash, views.complete,
         name="shop_complete"),
     url("^invoice/(?P<order_id>\d+)%s$" % _slash, views.invoice,

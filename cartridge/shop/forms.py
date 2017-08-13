@@ -11,7 +11,7 @@ from locale import localeconv
 from re import match
 
 from django import forms
-from django.forms.models import BaseInlineFormSet, ModelFormMetaclass
+from django.forms.models import BaseInlineFormSet, ModelFormMetaclass, ModelFormOptions
 from django.forms.models import inlineformset_factory
 from django.utils.safestring import mark_safe
 from django.utils.timezone import now
@@ -20,7 +20,7 @@ from django.utils.translation import ugettext_lazy as _
 from mezzanine.conf import settings
 from mezzanine.core.templatetags.mezzanine_tags import thumbnail
 
-from cartridge.shop import checkout
+from cartridge.shop import checkout,fields
 from cartridge.shop.models import Product, ProductOption, ProductVariation
 from cartridge.shop.models import Cart, CartItem, Order, DiscountCode
 from cartridge.shop.utils import (make_choices, set_locale, set_shipping,
@@ -28,6 +28,27 @@ from cartridge.shop.utils import (make_choices, set_locale, set_shipping,
 from filebrowser_safe.fields import FileBrowseWidget
 from filebrowser_safe.settings import EXTENSIONS
 import os
+
+_old_init = ModelFormOptions.__init__
+
+def _new_init(self, options=None):
+    _old_init(self, options)
+    self.fieldsets = getattr(options, 'fieldsets', None)
+
+ModelFormOptions.__init__ = _new_init
+
+class Fieldset(object):
+    def __init__(self, form, title, fields, classes):
+        self.form = form
+        self.title = title
+        self.fields = fields
+        self.classes = classes
+        
+
+    def __iter__(self):
+        # Similar to how a form can iterate through it's fields...
+        for field in self.fields:
+            yield field
 
 ADD_PRODUCT_ERRORS = {
     "invalid_options": _("The selected options are currently unavailable."),
@@ -72,6 +93,12 @@ class AddProductForm(forms.Form):
             return
         # Adding from the product page, remove the sku field
         # and build the choice fields for the variations.
+        if self._product:
+            for cat in self._product.categories.all():
+                if 'subscription' in cat.keywords_string:
+                    self.fields['quantity'].label='Users'
+                else:
+                    self.fields['quantity'].widget=forms.widgets.HiddenInput()
         del self.fields["sku"]
         option_fields = ProductVariation.option_fields()
         if not option_fields:
@@ -136,6 +163,13 @@ class CartItemForm(forms.ModelForm):
     class Meta:
         model = CartItem
         fields = ("quantity",)
+        
+#    def __init__(self,*args,**kwargs):
+#        super(CartItemForm,self).__init__(*args,**kwargs)
+#         _p = Product.objects.get(sku=self.instance.sku)
+#         for cat in _p.categories.all():
+#             if not 'subscription' in cat.keywords_string:
+#        self.fields['quantity'].widget.attrs['readonly']=True
 
     def clean_quantity(self):
         """
@@ -297,7 +331,7 @@ class OrderForm(FormsetForm, DiscountForm):
     with extra fields for credit card. Used across each step of the
     checkout process with fields being hidden where applicable.
     """
-
+    
     step = forms.IntegerField(widget=forms.HiddenInput())
     same_billing_shipping = forms.BooleanField(required=False, initial=True,
         label=_("My delivery details are the same as my billing details"))
@@ -321,6 +355,26 @@ class OrderForm(FormsetForm, DiscountForm):
                    f.name.startswith("billing_detail") or
                    f.name.startswith("shipping_detail")] +
                    ["additional_instructions", "discount_code"])
+        fieldsets = (
+                     ('title one',{'fields':('billing_detail_business','discount_code')}),)
+        
+    def fieldsets(self):
+        meta = getattr(self, '_meta', None)
+        if not meta:
+            meta = getattr(self, 'Meta', None)
+        
+        if not meta or not meta.fieldsets:
+            return
+        
+        for name, data in meta.fieldsets:
+            yield Fieldset(
+                form=self,
+                title=name,
+                fields=(self[f] for f in data.get('fields',())),
+                classes=data.get('classes', '')
+                )
+
+    forms.BaseForm.fieldsets = fieldsets
 
     def __init__(
             self, request, step, data=None, initial=None, errors=None,
@@ -334,12 +388,12 @@ class OrderForm(FormsetForm, DiscountForm):
         - Hides sets of fields based on the checkout step
         - Sets year choices for cc expiry field based on current date
         """
-
+        
         # ``data`` is usually the POST attribute of a Request object,
         # which is an immutable QueryDict. We want to modify it, so we
         # need to make a copy.
         data = copy(data)
-
+        shipping=kwargs.pop('shipping',None)
         # Force the specified step in the posted data, which is
         # required to allow moving backwards in steps. Also handle any
         # data pre-processing, which subclasses may override.
@@ -352,7 +406,7 @@ class OrderForm(FormsetForm, DiscountForm):
         super(OrderForm, self).__init__(
                 request, data=data, initial=initial, **kwargs)
         self._checkout_errors = errors
-
+        
         # Hide discount code field if it shouldn't appear in checkout,
         # or if no discount codes are active.
         settings.use_editable()
@@ -370,13 +424,23 @@ class OrderForm(FormsetForm, DiscountForm):
         if settings.SHOP_CHECKOUT_STEPS_SPLIT:
             if is_first_step:
                 # Hide cc fields for billing/shipping if steps are split.
-                hidden_filter = lambda f: f.startswith("card_")
+                if not shipping:
+                    hidden_filter = lambda f: f.startswith("card_") or f.startswith('shipping_')
+                else:
+                    hidden_filter = lambda f: f.startswith("card_")
             elif is_payment_step:
                 # Hide non-cc fields for payment if steps are split.
                 hidden_filter = lambda f: not f.startswith("card_")
+        elif is_first_step:
+            if not shipping:
+                hidden_filter = lambda f: f.startswith('shipping_') \
+                or f.startswith('additional')\
+                or f.startswith('same')\
+                or f.startswith('remember')
         elif not settings.SHOP_PAYMENT_STEP_ENABLED:
             # Hide all cc fields if payment step is not enabled.
             hidden_filter = lambda f: f.startswith("card_")
+        
         if settings.SHOP_CHECKOUT_STEPS_CONFIRMATION and is_last_step:
             # Hide all fields for the confirmation step.
             hidden_filter = lambda f: True
@@ -427,6 +491,136 @@ class OrderForm(FormsetForm, DiscountForm):
             raise forms.ValidationError(self._checkout_errors)
         return super(OrderForm, self).clean()
 
+class ExpressOrderForm(FormsetForm, DiscountForm):
+    
+    express = forms.BooleanField(widget=forms.HiddenInput(), initial=True)
+    getdetails = forms.BooleanField(widget=forms.HiddenInput(), initial=True)
+    token = forms.CharField(max_length=20, widget=forms.HiddenInput(),\
+                            initial='')
+    payerid = forms.CharField(max_length=13, widget=forms.HiddenInput(),\
+                            initial='')
+    step = forms.IntegerField(widget=forms.HiddenInput())
+    total = fields.MoneyField('Order Total')
+    remember = forms.BooleanField(required=False, initial=True,
+        label=_("Remember my address for next time"))
+    
+    class Meta:
+        model = Order
+        fields = ([f.name for f in Order._meta.fields if
+                   f.name.startswith("billing_detail") or
+                   f.name.startswith("shipping_detail")] +
+                   ["discount_code"])
+
+    def __init__(
+            self, request, step, data=None, initial=None, errors=None,
+            **kwargs):
+        """
+        Setup for each order form step which does a few things:
+
+        - Calls OrderForm.preprocess on posted data
+        - Sets up any custom checkout errors
+        - Hides the discount code field if applicable
+        - Hides sets of fields based on the checkout step
+        - Sets year choices for cc expiry field based on current date
+        """
+
+        # ``data`` is usually the POST attribute of a Request object,
+        # which is an immutable QueryDict. We want to modify it, so we
+        # need to make a copy.
+        data = copy(data)
+
+        # Force the specified step in the posted data, which is
+        # required to allow moving backwards in steps. Also handle any
+        # data pre-processing, which subclasses may override.
+        if data is not None:
+            data["step"] = step
+            data = self.preprocess(data)
+        if initial is not None:
+            initial["step"] = step
+        
+        super(ExpressOrderForm, self).__init__(
+                request, data=data, initial=initial, **kwargs)
+        self._checkout_errors = errors
+        self.prepopulate()
+        
+        # Hide discount code field if it shouldn't appear in checkout,
+        # or if no discount codes are active.
+        settings.use_editable()
+        if not (settings.SHOP_DISCOUNT_FIELD_IN_CHECKOUT and
+                DiscountCode.objects.active().exists()):
+            self.fields["discount_code"].widget = forms.HiddenInput()
+
+        # Determine which sets of fields to hide for each checkout step.
+        # A ``hidden_filter`` function is defined that's used for
+        # filtering out the fields to hide.
+        is_first_step = step == checkout.EXPRESS_CHECKOUT_STEP_FIRST
+        is_last_step = step == checkout.EXPRESS_CHECKOUT_STEP_LAST
+        is_payment_step = step == 3
+        hidden_filter = lambda f: False
+        if settings.SHOP_CHECKOUT_STEPS_SPLIT:
+            if is_first_step:
+                # Hide cc fields for billing/shipping if steps are split.
+                hidden_filter = lambda f: f.startswith("card_")
+            elif is_payment_step:
+                # Hide non-cc fields for payment if steps are split.
+                hidden_filter = lambda f: not f.startswith("card_")
+        elif not settings.SHOP_PAYMENT_STEP_ENABLED:
+            # Hide all cc fields if payment step is not enabled.
+            hidden_filter = lambda f: f.startswith("card_")
+        if settings.SHOP_CHECKOUT_STEPS_CONFIRMATION and is_last_step:
+            # Hide all fields for the confirmation step.
+            hidden_filter = lambda f: True
+        for field in filter(hidden_filter, self.fields):
+            self.fields[field].widget = forms.HiddenInput()
+            self.fields[field].required = False
+
+
+    @classmethod
+    def preprocess(cls, data):
+        """
+        A preprocessor for the order form data that can be overridden
+        by custom form classes. The default preprocessor here handles
+        copying billing fields to shipping fields if "same" checked.
+        """
+        if data.get("same_billing_shipping", "") == "on":
+            for field in data:
+                bill_field = field.replace("shipping_detail", "billing_detail")
+                if field.startswith("shipping_detail") and bill_field in data:
+                    data[field] = data[bill_field]
+        return data
+    
+    
+    def prepopulate(self):
+        for field in self.fields:
+            if field.startswith('billing') or field.startswith('shipping'):
+                self.fields[field].initial='n/a'      
+
+    def clean_card_expiry_year(self):
+        """
+        Ensure the card expiry doesn't occur in the past.
+        """
+        try:
+            month = int(self.cleaned_data["card_expiry_month"])
+            year = int(self.cleaned_data["card_expiry_year"])
+        except ValueError:
+            # Haven't reached payment step yet.
+            return
+        n = now()
+        if year == n.year and month < n.month:
+            raise forms.ValidationError(_("A valid expiry date is required."))
+        return str(year)
+
+    def clean(self):
+        """
+        Raise ``ValidationError`` if any errors have been assigned
+        externally, via one of the custom checkout step handlers.
+        """
+        print 'clean'
+        if self._checkout_errors:
+            raise forms.ValidationError(self._checkout_errors)
+        return super(ExpressOrderForm, self).clean()
+    
+    
 
 #######################
 #    ADMIN WIDGETS    #

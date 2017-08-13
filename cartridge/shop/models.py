@@ -21,7 +21,7 @@ from django.utils.translation import (ugettext, ugettext_lazy as _,
 from future.builtins import str, super
 from future.utils import with_metaclass
 from mezzanine.conf import settings
-from mezzanine.core.fields import FileField
+from mezzanine.core.fields import FileField,RichTextField
 from mezzanine.core.managers import DisplayableManager
 from mezzanine.core.models import Displayable, RichText, Orderable, SiteRelated
 from mezzanine.generic.fields import RatingField
@@ -29,6 +29,12 @@ from mezzanine.pages.models import Page
 from mezzanine.utils.models import AdminThumbMixin, upload_to
 from versatileimagefield.fields import VersatileImageField, PPOIField
 
+from importlib import import_module
+from paypal.standard.ipn.signals import payment_was_successful
+from reportlab.lib.colors import black
+from __builtin__ import True
+
+from django.contrib.auth.models import Permission
 
 class Priced(models.Model):
     """
@@ -86,7 +92,7 @@ class Priced(models.Model):
         obj_to.save()
 
 
-class Product(Displayable, Priced, RichText, AdminThumbMixin):
+class Product( Priced, RichText, AdminThumbMixin,Displayable):
     """
     Container model for a product that stores information common to
     all of its variations such as the product's title and description.
@@ -104,11 +110,12 @@ class Product(Displayable, Priced, RichText, AdminThumbMixin):
     upsell_products = models.ManyToManyField("self",
                              verbose_name=_("Upsell products"), blank=True)
     rating = RatingField(verbose_name=_("Rating"))
-
+    required_permissions = models.ManyToManyField(Permission,
+                             verbose_name=_("Required Permissions"), blank=True)
     objects = DisplayableManager()
 
     admin_thumb_field = "image"
-
+    list = RichTextField(_("List"),blank=True)
     search_fields = {"variations__sku": 100}
 
     class Meta:
@@ -122,14 +129,18 @@ class Product(Displayable, Priced, RichText, AdminThumbMixin):
         ``SHOP_USE_VARIATIONS`` is False, and the product is
         updated via the admin change list.
         """
+        
         updating = self.id is not None
         super(Product, self).save(*args, **kwargs)
+        
         if updating and not settings.SHOP_USE_VARIATIONS:
             default = self.variations.get(default=True)
             self.copy_price_fields_to(default)
-
+        
     @models.permalink
     def get_absolute_url(self):
+        if self.is_trial()[0]:
+            return ("signup", (), {})
         return ("shop_product", (), {"slug": self.slug})
 
     def copy_default_variation(self):
@@ -142,7 +153,66 @@ class Product(Displayable, Priced, RichText, AdminThumbMixin):
         if default.image:
             self.image = default.image.file.name
         self.save()
-
+    
+    def is_magazine(self):
+        for cat in self.categories.all():
+            if cat.title == 'Magazine':
+                return getattr(self,cat.title.lower())
+        return False
+    
+    def is_article(self):
+        for cat in self.categories.all():
+            if cat.title == 'Article':
+                return getattr(self,cat.title.lower())
+        return False
+    
+    def is_mag_or_art(self):
+        for cat in self.categories.all():
+            if cat.title in ['Magazine', 'Article']:
+                return (cat.title.lower(),getattr(self, cat.title.lower()))
+        return (False,None)
+    
+    def is_sub(self):
+        for cat in self.categories.all():
+            if cat.title in ['Subscription']:
+                return (cat.title.lower(),self)
+        return (False,None)
+    
+    def is_trial(self):
+        for cat in self.categories.all():
+            if cat.title in ['Free']:
+                return (cat.title.lower(),self)
+        return (False,None)
+        
+    
+    def perm_check(self,user):
+        _perms=self._perm_check()
+        if _perms:
+            for _perm in _perms:
+                _perm='_core.'+_perm.codename
+                if user.has_perm(_perm) or user.has_perm(_perm,self):
+                    return (True,1)
+            return (False,1)
+        return (True,0)
+    
+    def _perm_check(self):
+        _perms=self.required_permissions.all()
+        if _perms:
+            return _perms
+        else:
+            return False
+    
+    def get_file_url(self):
+        _mag    =   self.is_magazine()
+        _perms  =   self._perm_check()
+        if _mag and _mag.pdf:
+            if _perms:
+                return "/download/?slug="+_mag.slug
+            else:
+                return "/"+_mag.pdf.path
+        else:
+            return None
+            
 
 @python_2_unicode_compatible
 class ProductImage(Orderable):
@@ -176,7 +246,10 @@ class ProductImage(Orderable):
         return value
     
     def save(self,*args,**kwargs):
-        self.image=self.file.path
+        if(hasattr(self.file, 'path')):
+            self.image=self.file.path
+        
+        
         super(ProductImage, self).save(*args, **kwargs)
 
 
@@ -429,6 +502,7 @@ class Order(SiteRelated):
     additional_instructions = models.TextField(_("Additional instructions"),
                                                blank=True)
     time = models.DateTimeField(_("Time"), auto_now_add=True, null=True)
+    
     key = CharField(max_length=40, db_index=True)
     user_id = models.IntegerField(blank=True, null=True)
     shipping_type = CharField(_("Shipping type"), max_length=50, blank=True)
@@ -472,6 +546,7 @@ class Order(SiteRelated):
         to the order. Called in the final step of the checkout process
         prior to the payment handler being called.
         """
+        
         self.key = request.session.session_key
         self.user_id = request.user.id
         for field in self.session_fields:
@@ -486,21 +561,45 @@ class Order(SiteRelated):
         if self.tax_total is not None:
             self.total += Decimal(self.tax_total)
         self.save()  # We need an ID before we can add related items.
+        
         for item in request.cart:
             product_fields = [f.name for f in SelectedProduct._meta.fields]
             item = dict([(f, getattr(item, f)) for f in product_fields])
             self.items.create(**item)
+            
+    def setup_express(self, request):
+        """
+        Set order fields that are stored in the session, item_total
+        and total based on the given cart, and copy the cart items
+        to the order. Called in the first step of the express checkout process.
+        """
+        
+        self.key = request.session.session_key
+        self.user_id = request.user.id
+        for field in self.session_fields:
+            if field in request.session:
+                setattr(self, field, request.session[field])
+        self.total = self.item_total = request.cart.total_price()
+        if self.shipping_total is not None:
+            self.shipping_total = Decimal(str(self.shipping_total))
+            self.total += self.shipping_total
+        if self.discount_total is not None:
+            self.total -= Decimal(self.discount_total)
+        if self.tax_total is not None:
+            self.total += Decimal(self.tax_total)
+        
 
-    def complete(self, request):
+    def complete(self, request,express=False):
         """
         Remove order fields that are stored in the session, reduce the
         stock level for the items in the order, decrement the uses
         remaining count for discount code (if applicable) and then
         delete the cart.
         """
+        _express='express_' if express else ''
         self.save()  # Save the transaction ID.
         discount_code = request.session.get('discount_code')
-        clear_session(request, "order", *self.session_fields)
+        clear_session(request, "%sorder"%_express, *self.session_fields)
         for item in request.cart:
             try:
                 variation = ProductVariation.objects.get(sku=item.sku)
@@ -563,7 +662,11 @@ class Cart(models.Model):
         """
         if not self.pk:
             self.save()
-        kwargs = {"sku": variation.sku, "unit_price": variation.price()}
+        _print=False
+        for cat in variation.product.categories.all():
+            if 'print' in cat.keywords_string:
+                _print=True
+        kwargs = {"sku": variation.sku, "unit_price": variation.price(),'can_ship':_print}
         item, created = self.items.get_or_create(**kwargs)
         if created:
             item.description = force_text(variation)
@@ -581,6 +684,14 @@ class Cart(models.Model):
         Template helper function - does the cart have items?
         """
         return len(list(self)) > 0
+    
+    def need_to_ship(self):
+        _ship=False
+        for item in self.items.all():
+            if item.can_ship:
+                _ship=True
+                break
+        return _ship
 
     def total_quantity(self):
         """
@@ -670,6 +781,7 @@ class CartItem(SelectedProduct):
     cart = models.ForeignKey("Cart", related_name="items")
     url = CharField(max_length=2000)
     image = CharField(max_length=200, null=True)
+    can_ship = models.BooleanField(default=False)
 
     def get_absolute_url(self):
         return self.url
@@ -869,3 +981,65 @@ class DiscountCode(Discount):
     class Meta:
         verbose_name = _("Discount code")
         verbose_name_plural = _("Discount codes")
+        
+        
+
+
+# ...
+
+
+def payment_complete(sender, **kwargs):
+    """Performs the same logic as the code in
+    cartridge.shop.models.Order.complete(), but fetches the session,
+    order, and cart objects from storage, rather than relying on the
+    request object being passed in (which it isn't, since this is
+    triggered on PayPal IPN callback)."""
+    print "SENDER"
+    print dir(sender)
+    ipn_obj = sender
+
+    if ipn_obj.custom and ipn_obj.invoice:
+        s_key, cart_pk = ipn_obj.custom.split(',')
+        SessionStore = import_module(settings.SESSION_ENGINE) \
+                           .SessionStore
+        session = SessionStore(s_key)
+        
+        try:
+            cart = Cart.objects.get(id=cart_pk)
+            try:
+                order = Order.objects.get(
+                    transaction_id=ipn_obj.invoice)
+                for field in order.session_fields:
+                    if field in session:
+                        del session[field]
+                try:
+                    del session["order"]
+                except KeyError:
+                    pass
+
+                # Since we're manually changing session data outside of
+                # a normal request, need to force the session object to
+                # save after modifying its data.
+                session.save()
+
+                for item in cart:
+                    try:
+                        variation = ProductVariation.objects.get(
+                            sku=item.sku)
+                    except ProductVariation.DoesNotExist:
+                        pass
+                    else:
+                        variation.update_stock(item.quantity * -1)
+                        variation.product.actions.purchased()
+
+                code = session.get('discount_code')
+                if code:
+                    DiscountCode.objects.active().filter(code=code) \
+                        .update(uses_remaining=F('uses_remaining') - 1)
+                cart.delete()
+            except Order.DoesNotExist:
+                pass
+        except Cart.DoesNotExist:
+            pass
+
+payment_was_successful.connect(payment_complete)

@@ -29,7 +29,8 @@ except AttributeError:
                                "in your settings module to use the "
                                "paypal payment processor.")
 
-
+    fdfsdf
+    
 def process(request, order_form, order):
     """
     Paypal direct payment processor.
@@ -379,5 +380,5 @@ COUNTRIES = (
     ("EH", "WESTERN SAHARA"),
     ("YE", "YEMEN"),
     ("ZM", "ZAMBIA"),
-    ("ZW ", "ZIMBABWE")
+    ("ZW", "ZIMBABWE")
 )

@@ -1,13 +1,19 @@
 from __future__ import unicode_literals
-from future.builtins import int, str
 
 from json import dumps
 
+from cartridge.shop import checkout
+from cartridge.shop.forms import (AddProductForm, CartItemFormSet,
+                                  DiscountForm, OrderForm)
+from cartridge.shop.models import DiscountCode
+from cartridge.shop.models import Product, ProductVariation, Order
+from cartridge.shop.utils import recalculate_cart, sign
 from django.contrib.auth.decorators import login_required
-from django.contrib.messages import info
+from django.contrib.messages import info, error
 from django.core.urlresolvers import reverse
 from django.db.models import Sum
 from django.http import Http404, HttpResponse
+from django.http import HttpResponseRedirect
 from django.shortcuts import get_object_or_404, redirect
 from django.template import RequestContext
 from django.template.defaultfilters import slugify
@@ -15,17 +21,16 @@ from django.template.loader import get_template
 from django.template.response import TemplateResponse
 from django.utils.translation import ugettext as _
 from django.views.decorators.cache import never_cache
+from future.builtins import int, str
+from mezzanine.accounts import get_profile_form
 from mezzanine.conf import settings
 from mezzanine.utils.importing import import_dotted_path
-from mezzanine.utils.views import set_cookie, paginate
 from mezzanine.utils.urls import next_url
+from mezzanine.utils.views import set_cookie, paginate
+from paypal.pro.exceptions import PayPalFailure
+from paypal.pro.helpers import PayPalWPP, express_endpoint_for_token
+from paypal.pro.views import PayPalPro
 
-from cartridge.shop import checkout
-from cartridge.shop.forms import (AddProductForm, CartItemFormSet,
-                                  DiscountForm, OrderForm)
-from cartridge.shop.models import Product, ProductVariation, Order
-from cartridge.shop.models import DiscountCode
-from cartridge.shop.utils import recalculate_cart, sign
 
 try:
     from xhtml2pdf import pisa
@@ -210,7 +215,6 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
     """
     Display the order form and handle processing of each step.
     """
-
     # Do the authentication check here rather than using standard
     # login_required decorator. This means we can check for a custom
     # LOGIN_URL and fall back to our own login view.
@@ -231,33 +235,37 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
         form_class = import_dotted_path(settings.SHOP_CHECKOUT_FORM_CLASS)
 
     initial = checkout.initial_order_data(request, form_class)
+    _shipping= request.cart.need_to_ship()
     step = int(request.POST.get("step", None) or
                initial.get("step", None) or
                checkout.CHECKOUT_STEP_FIRST)
-    form = form_class(request, step, initial=initial)
+    form = form_class(request, step, initial=initial,shipping=_shipping)
     data = request.POST
     checkout_errors = []
-
+    
     if request.POST.get("back") is not None:
         # Back button in the form was pressed - load the order form
         # for the previous step and maintain the field values entered.
         step -= 1
-        form = form_class(request, step, initial=initial)
+        form = form_class(request, step, initial=initial,shipping=_shipping)
     elif request.method == "POST" and request.cart.has_items():
-        form = form_class(request, step, initial=initial, data=data)
+        
+        form = form_class(request, step, initial=initial, data=data,shipping=_shipping)
         if form.is_valid():
             # Copy the current form fields to the session so that
             # they're maintained if the customer leaves the checkout
             # process, but remove sensitive fields from the session
             # such as the credit card fields so that they're never
             # stored anywhere.
+            print 'valid form'
             request.session["order"] = dict(form.cleaned_data)
+            print request.session['order']
             sensitive_card_fields = ("card_number", "card_expiry_month",
                                      "card_expiry_year", "card_ccv")
             for field in sensitive_card_fields:
                 if field in request.session["order"]:
                     del request.session["order"][field]
-
+            
             # FIRST CHECKOUT STEP - handle discount code. This needs to
             # be set before shipping, to allow for free shipping to be
             # first set by a discount code.
@@ -273,9 +281,10 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
                 tax_handler(request, form)
             except checkout.CheckoutError as e:
                 checkout_errors.append(e)
-
+            print 'here'
             # FINAL CHECKOUT STEP - run payment handler and process order.
             if step == checkout.CHECKOUT_STEP_LAST and not checkout_errors:
+                print 'checkoutlast'
                 # Create and save the initial order object so that
                 # the payment handler has access to all of the order
                 # fields. If there is a payment error then delete the
@@ -319,7 +328,7 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
                               errors=checkout_errors)
             if form.is_valid():
                 step += 1
-                form = form_class(request, step, initial=initial)
+                form = form_class(request, step, initial=initial,shipping=_shipping)
 
     # Update the step so that we don't rely on POST data to take us back to
     # the same point in the checkout process.
@@ -328,7 +337,7 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
         request.session.modified = True
     except KeyError:
         pass
-
+    
     step_vars = checkout.CHECKOUT_STEPS[step - 1]
     template = "shop/%s.html" % step_vars["template"]
     context = {"CHECKOUT_STEP_FIRST": step == checkout.CHECKOUT_STEP_FIRST,
@@ -336,9 +345,193 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
                "CHECKOUT_STEP_PAYMENT": (settings.SHOP_PAYMENT_STEP_ENABLED and
                    step == checkout.CHECKOUT_STEP_PAYMENT),
                "step_title": step_vars["title"], "step_url": step_vars["url"],
-               "steps": checkout.CHECKOUT_STEPS, "step": step, "form": form}
+               "steps": checkout.CHECKOUT_STEPS, "step": step, "form": form,
+               'shipping':_shipping}
     context.update(extra_context or {})
+    
     return TemplateResponse(request, template, context)
+
+@never_cache
+def express_cancel(request):
+    try:
+        del request.session['express_order']
+    except:
+        pass
+    _cart=reverse('shop_cart')
+    return HttpResponseRedirect(_cart)
+    
+@never_cache
+def express_steps(request, form_class=OrderForm, extra_context=None):
+    """
+    SetExpressCheckout and handle the order
+    """
+    # Do the authentication check here rather than using standard
+    # login_required decorator. This means we can check for a custom
+    # LOGIN_URL and fall back to our own login view.
+    authenticated = request.user.is_authenticated()
+    if settings.SHOP_CHECKOUT_ACCOUNT_REQUIRED and not authenticated:
+        url = "%s?next=%s" % (settings.LOGIN_URL, reverse("shop_express_checkout"))
+        return redirect(url)
+    #maybe need to modify this to not pull regular orders from db or session
+    #perhaps we should get rid of this because well give paypal shipping details priority
+    #and let them be changed on a per instance basis
+    initial = checkout.initial_order_data(request, form_class,express=True)
+    #this only posts during final step therefore will never get a post step variable
+    step = int(request.POST.get("step", None) or
+               initial.get("step", None) or 1)
+
+    form = form_class(request, step, initial=initial)
+    token = initial.get('token',None)
+    total = initial.get('total',None)
+    getdetails = initial.get('getdetails',True)
+    wpp = PayPalWPP(request)
+    
+    checkout_errors = []
+    # FIRST CHECKOUT STEP - handle discount code. This needs to
+    # be set before shipping, to allow for free shipping to be
+    # first set by a discount code.
+    if step == checkout.EXPRESS_CHECKOUT_STEP_FIRST:
+        form.set_discount()
+ 
+    # ALL STEPS - run billing/tax handlers. These are run on
+    # all steps, since all fields (such as address fields) are
+    # posted on each step, even as hidden inputs when not
+    # visible in the current step.
+    try:
+        billship_handler(request, form)
+        tax_handler(request, form)
+    except checkout.CheckoutError as e:
+        checkout_errors.append(e)
+        
+    #create the session order and run setup for totals
+    order = form.save(commit=False)
+    order.setup_express(request)
+    
+    if total:
+        if total != str(order.total):
+            error(request, 'The cart total and order total do not match. Please start over.')
+            return redirect('shop_express_checkout_cancel')
+        
+    if request.POST.get("back") is not None:
+        # Back button in the form was pressed - load the order form
+        # for the previous step and maintain the field values entered.
+        step -= 1
+        form = form_class(request, step, initial=initial)     
+    #SetExpressCheckout here and redirect to PayPal
+    elif request.cart.has_items():
+        
+        _shipping = request.cart.need_to_ship()
+        
+        if step == 1:
+            
+            _bill_data = {'paymentrequest_0_amt':order.total,
+                      'returnurl':'https://localhost/shop/express-checkout/',
+                      'cancelurl':'https://localhost/shop/express-checkout-cancel/',
+                      'noshipping':0 if _shipping else 1,'allownote':"1","reqbillingaddress":1}
+            if token:
+                _bill_data['token']=token
+                
+            try:
+                nvp_obj = wpp.setExpressCheckout(_bill_data)
+            except PayPalFailure as e:
+                print e
+                if token:
+                    del _bill_data['token']
+                try:
+                    nvp_obj = wpp.setExpressCheckout(_bill_data)
+                except PayPalFailure as e:
+                    error(request, str(e)+' please try again or use our Checkout')
+                    return redirect('shop_express_checkout_cancel')
+                 
+            # Update the step so that we don't rely on POST data to take us back to
+            # the same point in the checkout process.
+            
+            request.session["express_order"]=initial   
+            request.session["express_order"]["step"] = 3
+            request.session["express_order"]["total"] = str(order.total)
+            request.session['express_order']['token']=nvp_obj.token
+            
+            request.session.modified = True
+            _commit=True if not _shipping else False
+            return HttpResponseRedirect(express_endpoint_for_token(nvp_obj.token,commit=_commit))
+        
+        if step==3:
+            payerid=request.session["express_order"].get('payerid',False)
+            _session_order=request.session["express_order"]
+            if getdetails:
+                
+                try:
+                    nvp_obj = wpp.getExpressCheckoutDetails({'token':token})
+                    print 'getdetails'
+                    d=nvp_obj.response_dict
+                    _session_order['billing_detail_business']=d.get('business','n/a')
+                    _session_order['billing_detail_first_name']=d.get('firstname','n/a')
+                    _session_order['billing_detail_last_name']=d.get('lastname','n/a')
+                    _session_order['billing_detail_country']=d.get('countrycode','n/a')
+                    _session_order['billing_detail_state']=d.get('state','n/a')
+                    _session_order['billing_detail_street']=d.get('street','n/a')+' '+d.get('street2','')
+                    _session_order['billing_detail_state']=d.get('state','n/a')
+                    _session_order['billing_detail_postcode']=d.get('zip','n/a')
+                    _session_order['billing_detail_city']=d.get('city','n/a')
+                    _session_order['billing_detail_email']=d.get('email','n/a')
+                    _session_order['shipping_detail_business']=d.get('business','n/a')
+                    _session_order['shipping_detail_first_name']=d.get('firstname','n/a')
+                    _session_order['shipping_detail_last_name']=d.get('lastname','n/a')
+                    _session_order['shipping_detail_country']=d.get('shiptocountrycode','n/a')
+                    _session_order['shipping_detail_state']=d.get('shiptostate','n/a')
+                    _session_order['shipping_detail_street']=d.get('shiptostreet','n/a')+' '+d.get('shiptostreet2','')
+                    _session_order['shipping_detail_state']=d.get('shiptostate','n/a')
+                    _session_order['shipping_detail_postcode']=d.get('shiptozip','n/a')
+                    _session_order['shipping_detail_city']=d.get('shiptocity','n/a')
+                    _session_order['additional_instructions']=d.get('paymentrequest_0_notetext','')
+                    _session_order['payerid']=nvp_obj.payerid
+                    _session_order['getdetails']=False
+                    initial = checkout.initial_order_data(request, form_class,express=True)
+                    form = form_class(request, step, data=initial)
+                    order = form.save(commit=False)
+                    payerid=nvp_obj.payerid
+                    request.session.modified = True
+                except PayPalFailure as e:
+                    checkout_errors.append(e)
+            
+            if token and payerid and not checkout_errors:
+                
+                if request.method == 'POST' or not _shipping:
+                    print 'step 3 and post or _noshipping'
+                    
+                    try:
+                        order.setup(request)
+                        nvp_obj = wpp.doExpressCheckoutPayment({'token':token,'payerid':payerid,\
+                                'paymentrequest_0_amt':order.total})
+                          
+                    except PayPalFailure as e:
+                        
+                        order.delete()
+                        checkout_errors.append(e)
+                        error(request,e)
+                        return redirect('shop_express_checkout_cancel')
+                    else:
+                        order.complete(request,express=True)
+                        order_handler(request, form, order)
+                        return redirect("shop_complete")
+                  
+            else:
+                error(request,checkout_errors)
+                return redirect('shop_express_checkout_cancel')
+         
+     
+    
+    step_vars = checkout.EXPRESS_CHECKOUT_STEPS[step - 1]
+    template = "shop/%s.html" % step_vars["template"]
+    context = {"CHECKOUT_STEP_FIRST": step == checkout.EXPRESS_CHECKOUT_STEP_FIRST,
+               "CHECKOUT_STEP_LAST": step == checkout.EXPRESS_CHECKOUT_STEP_LAST,
+               
+               "step_title": step_vars["title"], "step_url": step_vars["url"],
+               "steps": checkout.EXPRESS_CHECKOUT_STEPS, "step": step, "form": form,
+               'express':True,"shipping":_shipping}
+    context.update(extra_context or {})
+    
+    return TemplateResponse(request, template,context)
 
 
 @never_cache
@@ -348,6 +541,7 @@ def complete(request, template="shop/complete.html", extra_context=None):
     for tracking items via Google Anayltics, and displaying in
     the template if required.
     """
+    print request.POST
     try:
         order = Order.objects.from_request(request)
     except Order.DoesNotExist:

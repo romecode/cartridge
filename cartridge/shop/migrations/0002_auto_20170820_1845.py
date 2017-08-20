@@ -11,7 +11,7 @@ import cartridge.shop.fields
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('auth', '0003_auto_20160728_1559'),
+        ('auth', '0002_auto_20170820_1845'),
         ('shop', '0001_initial'),
     ]
 
@@ -20,6 +20,21 @@ class Migration(migrations.Migration):
             model_name='cartitem',
             name='can_ship',
             field=models.BooleanField(default=False),
+        ),
+        migrations.AddField(
+            model_name='order',
+            name='billing_detail_business',
+            field=models.CharField(max_length=125, verbose_name='Business Name', blank=True),
+        ),
+        migrations.AddField(
+            model_name='order',
+            name='express',
+            field=models.BooleanField(default=False),
+        ),
+        migrations.AddField(
+            model_name='order',
+            name='shipping_detail_business',
+            field=models.CharField(max_length=125, verbose_name='Business Name', blank=True),
         ),
         migrations.AddField(
             model_name='product',

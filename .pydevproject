@@ -10,5 +10,8 @@
 <path>/home/focus/Dropbox/AGF_dev/AGF</path>
 <path>/home/focus/git/mezzanine</path>
 <path>/home/focus/git/cartridge</path>
+<path>/home/focus/git/cartridge-payments</path>
+<path>/home/focus/git/django-paypal</path>
+<path>/home/focus/git/django</path>
 </pydev_pathproperty>
 </pydev_project>

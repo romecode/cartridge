@@ -9,6 +9,8 @@ from cartridge.shop.models import DiscountCode
 from cartridge.shop.models import Product, ProductVariation, Order
 from cartridge.shop.utils import recalculate_cart, sign
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth import login as auth_login
+from django.contrib.auth.models import User
 from django.contrib.messages import info, error
 from django.core.urlresolvers import reverse
 from django.db.models import Sum
@@ -30,6 +32,9 @@ from mezzanine.utils.views import set_cookie, paginate
 from paypal.pro.exceptions import PayPalFailure
 from paypal.pro.helpers import PayPalWPP, express_endpoint_for_token
 from paypal.pro.views import PayPalPro
+from django.contrib.auth.tokens import default_token_generator
+from django.utils.http import int_to_base36
+from django.contrib.auth import authenticate
 
 
 try:
@@ -257,9 +262,9 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
             # process, but remove sensitive fields from the session
             # such as the credit card fields so that they're never
             # stored anywhere.
-            print 'valid form'
+            
             request.session["order"] = dict(form.cleaned_data)
-            print request.session['order']
+            
             sensitive_card_fields = ("card_number", "card_expiry_month",
                                      "card_expiry_year", "card_ccv")
             for field in sensitive_card_fields:
@@ -281,10 +286,10 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
                 tax_handler(request, form)
             except checkout.CheckoutError as e:
                 checkout_errors.append(e)
-            print 'here'
+            
             # FINAL CHECKOUT STEP - run payment handler and process order.
             if step == checkout.CHECKOUT_STEP_LAST and not checkout_errors:
-                print 'checkoutlast'
+                
                 # Create and save the initial order object so that
                 # the payment handler has access to all of the order
                 # fields. If there is a payment error then delete the
@@ -309,7 +314,7 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
                     # Then send the order email to the customer.
                     order.transaction_id = transaction_id
                     order.complete(request)
-                    order_handler(request, form, order)
+                    request.session['user']=order_handler(request, form, order)
                     checkout.send_order_email(request, order)
                     # Set the cookie for remembering address details
                     # if the "remember" checkbox was checked.
@@ -320,6 +325,7 @@ def checkout_steps(request, form_class=OrderForm, extra_context=None):
                                    secure=request.is_secure())
                     else:
                         response.delete_cookie("remember")
+                    
                     return response
 
             # If any checkout errors, assign them to a new form and
@@ -541,7 +547,7 @@ def complete(request, template="shop/complete.html", extra_context=None):
     for tracking items via Google Anayltics, and displaying in
     the template if required.
     """
-    print request.POST
+    
     try:
         order = Order.objects.from_request(request)
     except Order.DoesNotExist:
@@ -556,9 +562,21 @@ def complete(request, template="shop/complete.html", extra_context=None):
         names[variation.sku] = variation.product.title
     for i, item in enumerate(items):
         setattr(items[i], "name", names[item.sku])
+    #change user_id on order from Anon
+    if request.session['user'] != request.user.id:
+        order.user_id=request.session['user']
+        order.save()
+        user=User.objects.get(pk=order.user_id)
+        token = default_token_generator.make_token(user)
+        user = authenticate(uidb36=int_to_base36(user.id),
+                            token=token,
+                            is_active=True)
+        auth_login(request, user)
     context = {"order": order, "items": items, "has_pdf": HAS_PDF,
                "steps": checkout.CHECKOUT_STEPS}
     context.update(extra_context or {})
+    
+        
     return TemplateResponse(request, template, context)
 
 
@@ -573,6 +591,7 @@ def invoice(request, order_id, template="shop/order_invoice.html",
         order = Order.objects.get_for_user(order_id, request)
     except Order.DoesNotExist:
         raise Http404
+    
     context = {"order": order}
     context.update(order.details_as_dict())
     context.update(extra_context or {})

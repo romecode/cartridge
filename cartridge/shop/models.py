@@ -139,7 +139,7 @@ class Product( Priced, RichText, AdminThumbMixin,Displayable):
         
     @models.permalink
     def get_absolute_url(self):
-        if self.is_trial()[0]:
+        if self.is_free():
             return ("signup", (), {})
         return ("shop_product", (), {"slug": self.slug})
 
@@ -178,11 +178,11 @@ class Product( Priced, RichText, AdminThumbMixin,Displayable):
                 return (cat.title.lower(),self)
         return (False,None)
     
-    def is_trial(self):
+    def is_free(self):
         for cat in self.categories.all():
             if cat.title in ['Free']:
-                return (cat.title.lower(),self)
-        return (False,None)
+                return True
+        return False
         
     
     def perm_check(self,user):

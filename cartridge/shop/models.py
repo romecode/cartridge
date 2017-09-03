@@ -139,8 +139,8 @@ class Product( Priced, RichText, AdminThumbMixin,Displayable):
         
     @models.permalink
     def get_absolute_url(self):
-        if self.is_free():
-            return ("signup", (), {})
+        #if self.is_free():
+        #    return ("signup", (), {})
         return ("shop_product", (), {"slug": self.slug})
 
     def copy_default_variation(self):

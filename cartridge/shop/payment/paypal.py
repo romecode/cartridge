@@ -29,7 +29,7 @@ except AttributeError:
                                "in your settings module to use the "
                                "paypal payment processor.")
 
-    fdfsdf
+    
     
 def process(request, order_form, order):
     """
@@ -131,6 +131,7 @@ def process(request, order_form, order):
     state = parsed_results['ACK']
     if state not in ["Success", "SuccessWithWarning"]:
         raise CheckoutError(parsed_results['L_LONGMESSAGE0'])
+    print parsed_results
     return parsed_results['TRANSACTIONID']
 
 

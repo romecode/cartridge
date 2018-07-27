@@ -553,13 +553,17 @@ class Order(SiteRelated):
             if field in request.session:
                 setattr(self, field, request.session[field])
         self.total = self.item_total = request.cart.total_price()
+        
         if self.shipping_total is not None:
             self.shipping_total = Decimal(str(self.shipping_total))
             self.total += self.shipping_total
+            
         if self.discount_total is not None:
             self.total -= Decimal(self.discount_total)
+            
         if self.tax_total is not None:
             self.total += Decimal(self.tax_total)
+        self.total = round(self.total,2)
         self.save()  # We need an ID before we can add related items.
         
         for item in request.cart:

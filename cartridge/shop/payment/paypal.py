@@ -12,7 +12,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.http import QueryDict
 from django.utils.http import urlencode
 from mezzanine.conf import settings
-
+import json
 from cartridge.shop.checkout import CheckoutError
 
 
@@ -131,7 +131,8 @@ def process(request, order_form, order):
     state = parsed_results['ACK']
     if state not in ["Success", "SuccessWithWarning"]:
         raise CheckoutError(parsed_results['L_LONGMESSAGE0'])
-    print parsed_results
+    file=open("paypal.results","w")
+    file.write(json.dumps(parsed_results))
     return parsed_results['TRANSACTIONID']
 
 
